@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Faena · Panel operativo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:'IBM Plex Sans',system-ui,sans-serif;color:#0F1B2D;background:#F4F6F9;}
+  .mono{font-family:'IBM Plex Mono';}
+  .tap{cursor:pointer;-webkit-tap-highlight-color:transparent;user-select:none;transition:transform .1s,filter .15s,background .15s,border-color .15s;}
+  .tap:active{transform:scale(.985);filter:brightness(.98);}
+  table{border-collapse:collapse;width:100%;}
+  th,td{text-align:left;}
+  ::-webkit-scrollbar{height:8px;width:8px;}
+  ::-webkit-scrollbar-thumb{background:#D2DBE6;border-radius:4px;}
+  @keyframes fadeUp{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}
+  .view{animation:fadeUp .25s cubic-bezier(.22,.61,.36,1);}
+  .row:hover{background:#F7F9FC;}
+  input{font-family:inherit;}
+  /* layout */
+  .shell{display:grid;grid-template-columns:224px 1fr;min-height:100vh;}
+  .side{background:#0F1B2D;color:#fff;padding:22px 14px;position:sticky;top:0;height:100vh;}
+  .main{min-width:0;}
+  .topbar{position:sticky;top:0;z-index:20;background:rgba(244,246,249,.9);backdrop-filter:blur(12px);
+          border-bottom:1px solid #E6EBF2;padding:16px 26px;display:flex;align-items:center;justify-content:space-between;gap:16px;}
+  .content{padding:24px 26px 60px;}
+  @media (max-width:820px){
+    .shell{grid-template-columns:1fr;}
+    .side{position:static;height:auto;display:flex;gap:6px;overflow-x:auto;padding:12px;}
+    .side .brand{display:none;}
+    .navlist{display:flex;gap:6px;}
+    .navitem{white-space:nowrap;}
+    .content{padding:18px 14px 50px;}
+    .topbar{padding:14px 16px;}
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+"use strict";
+/* ===========================================================================
+   Faena · Panel operativo (lado plataforma).
+   Conectado a Supabase. Si no pegas credenciales abajo, corre en modo DEMO
+   con los datos de ejemplo (igual que antes).
+   =========================================================================== */
+
+// ── CONFIG ── pega aquí la URL y la anon key de tu proyecto Supabase ────────
+const SUPABASE_URL      = '';   // ej: https://xxxxxxxx.supabase.co
+const SUPABASE_ANON_KEY = '';   // ej: eyJhbGciOi...
+// ───────────────────────────────────────────────────────────────────────────
+const DEMO = !SUPABASE_URL || !SUPABASE_ANON_KEY;
+const sb   = DEMO ? null : window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+const TODAY = new Date();   // hoy real (alinea con created_at de inserciones nuevas)
+
+const state = { auth: false, view: 'resumen', period: 'mes', modal: null };
+
+const clp = (n) => '$' + Math.round(n).toLocaleString('es-CL');
+const clpK = (n) => '$' + Math.round(n / 1000) + 'K';
+
+/* ------------------------------- datos ---------------------------------- */
+let MEC = [
+  { id: 'm1', name: 'Rodrigo Salazar', init: 'RS', bg: '#1A56C4', spec: 'Frenos · Hidráulica', rating: 4.9, jobs: 212, zona: 'RM Poniente', disp: true, verif: true, estado: 'activo' },
+  { id: 'm2', name: 'Marcela Tapia', init: 'MT', bg: '#15976A', spec: 'Electrónica · Diagnóstico', rating: 4.8, jobs: 156, zona: 'RM Norte', disp: true, verif: true, estado: 'activo' },
+  { id: 'm3', name: 'Iván Quezada', init: 'IQ', bg: '#E08600', spec: 'Motor diésel · Transmisión', rating: 4.7, jobs: 98, zona: 'RM Sur', disp: false, verif: true, estado: 'activo' },
+  { id: 'm4', name: 'Pedro Cáceres', init: 'PC', bg: '#7A5CC4', spec: 'Tren de rodaje', rating: 4.6, jobs: 64, zona: 'Rancagua', disp: true, verif: true, estado: 'activo' },
+  { id: 'm5', name: 'Daniela Rojas', init: 'DR', bg: '#0F8AA6', spec: 'Hidráulica', rating: 4.9, jobs: 41, zona: 'RM Poniente', disp: false, verif: false, estado: 'pendiente' },
+  { id: 'm6', name: 'Sergio Maldonado', init: 'SM', bg: '#94A3B5', spec: 'Motor diésel', rating: 4.3, jobs: 120, zona: 'RM Centro', disp: false, verif: true, estado: 'suspendido' },
+];
+
+let CLI = [
+  { id: 'c1', name: 'Constructora Andes Ltda.', init: 'CA', equipos: 3, rubro: 'Construcción', rating: 4.8 },
+  { id: 'c2', name: 'Minera Norte', init: 'MN', equipos: 8, rubro: 'Minería', rating: 4.6 },
+  { id: 'c3', name: 'Constructora Sur', init: 'CS', equipos: 5, rubro: 'Construcción', rating: 4.7 },
+  { id: 'c4', name: 'Áridos El Roble', init: 'AR', equipos: 2, rubro: 'Áridos', rating: 4.5 },
+];
+
+// estado: pendiente | buscando | asignada | en_camino | en_terreno | completada | pagada | cancelada
+let SOL = [
+  { id: 'SOL-1042', fecha: '2026-06-27 09:41', equipo: 'Excavadora CAT 336', code: 'EXC-336', falla: 'Frenos de aire', grav: 'critica', cli: 'c1', mec: 'm1', estado: 'en_camino', monto: 179850, etaMin: 8, pago: null },
+  { id: 'SOL-1041', fecha: '2026-06-27 08:10', equipo: 'Camión Volvo A40G', code: 'CAM-A40', falla: 'Sistema hidráulico', grav: 'alta', cli: 'c2', mec: 'm2', estado: 'en_terreno', monto: 142000, etaMin: 0, pago: null },
+  { id: 'SOL-1040', fecha: '2026-06-26 17:22', equipo: 'Bulldozer Komatsu D65', code: 'BUL-D65', falla: 'Falla electrónica', grav: 'media', cli: 'c3', mec: null, estado: 'buscando', monto: 96000, etaMin: null, pago: null },
+  { id: 'SOL-1039', fecha: '2026-06-26 11:05', equipo: 'Excavadora CAT 320', code: 'EXC-320', falla: 'Motor diésel', grav: 'critica', cli: 'c2', mec: null, estado: 'pendiente', monto: 168000, etaMin: null, pago: null },
+  { id: 'SOL-1038', fecha: '2026-06-25 15:48', equipo: 'Camión Volvo A40G', code: 'CAM-A40', falla: 'Transmisión', grav: 'alta', cli: 'c1', mec: 'm3', estado: 'completada', monto: 142000, etaMin: 0, pago: 'retenido' },
+  { id: 'SOL-1037', fecha: '2026-06-24 10:12', equipo: 'Bulldozer Komatsu D65', code: 'BUL-D65', falla: 'Tren de rodaje', grav: 'media', cli: 'c4', mec: 'm4', estado: 'pagada', monto: 96000, etaMin: 0, pago: 'retenido' },
+  { id: 'SOL-1036', fecha: '2026-06-22 09:30', equipo: 'Excavadora CAT 336', code: 'EXC-336', falla: 'Sistema hidráulico', grav: 'alta', cli: 'c1', mec: 'm1', estado: 'pagada', monto: 179850, etaMin: 0, pago: 'liberado' },
+  { id: 'SOL-1035', fecha: '2026-06-20 14:03', equipo: 'Camión Volvo A40G', code: 'CAM-A40', falla: 'Falla electrónica', grav: 'critica', cli: 'c2', mec: 'm2', estado: 'pagada', monto: 128000, etaMin: 0, pago: 'liberado' },
+  { id: 'SOL-1034', fecha: '2026-06-18 16:40', equipo: 'Bulldozer Komatsu D65', code: 'BUL-D65', falla: 'Motor diésel', grav: 'media', cli: 'c3', mec: 'm3', estado: 'pagada', monto: 95500, etaMin: 0, pago: 'liberado' },
+  { id: 'SOL-1033', fecha: '2026-06-15 08:55', equipo: 'Excavadora CAT 336', code: 'EXC-336', falla: 'Frenos de aire', grav: 'critica', cli: 'c1', mec: 'm1', estado: 'pagada', monto: 210000, etaMin: 0, pago: 'liberado' },
+  { id: 'SOL-1032', fecha: '2026-06-12 13:20', equipo: 'Camión Volvo A40G', code: 'CAM-A40', falla: 'Sistema hidráulico', grav: 'alta', cli: 'c2', mec: 'm4', estado: 'cancelada', monto: 0, etaMin: null, pago: null },
+  { id: 'SOL-1031', fecha: '2026-06-08 11:11', equipo: 'Bulldozer Komatsu D65', code: 'BUL-D65', falla: 'Transmisión', grav: 'media', cli: 'c4', mec: 'm2', estado: 'pagada', monto: 118000, etaMin: 0, pago: 'liberado' },
+  { id: 'SOL-1030', fecha: '2026-05-29 09:00', equipo: 'Excavadora CAT 336', code: 'EXC-336', falla: 'Motor diésel', grav: 'alta', cli: 'c1', mec: 'm1', estado: 'pagada', monto: 165000, etaMin: 0, pago: 'liberado' },
+  { id: 'SOL-1029', fecha: '2026-05-21 15:30', equipo: 'Camión Volvo A40G', code: 'CAM-A40', falla: 'Frenos de aire', grav: 'critica', cli: 'c2', mec: 'm3', estado: 'pagada', monto: 188000, etaMin: 0, pago: 'liberado' },
+];
+
+const ESTADO = {
+  pendiente:  { label: 'Pendiente',   bg: '#FCF2DF', ink: '#E08600' },
+  buscando:   { label: 'Buscando',    bg: '#EAF1FF', ink: '#1A56C4' },
+  asignada:   { label: 'Asignada',    bg: '#EAF1FF', ink: '#1A56C4' },
+  en_camino:  { label: 'En camino',   bg: '#EAF1FF', ink: '#1A56C4' },
+  en_terreno: { label: 'En terreno',  bg: '#E6F4EE', ink: '#15976A' },
+  completada: { label: 'Completada',  bg: '#E6F4EE', ink: '#15976A' },
+  pagada:     { label: 'Pagada',      bg: '#E6F4EE', ink: '#15976A' },
+  cancelada:  { label: 'Cancelada',   bg: '#F0F4F9', ink: '#94A3B5' },
+};
+const GRAV = {
+  critica: { label: 'Crítica', ink: '#C1331C' },
+  alta:    { label: 'Alta',    ink: '#E08600' },
+  media:   { label: 'Media',   ink: '#15976A' },
+};
+const FLUJO = ['pendiente', 'buscando', 'asignada', 'en_camino', 'en_terreno', 'completada', 'pagada'];
+const ACTIVOS = ['pendiente', 'buscando', 'asignada', 'en_camino', 'en_terreno'];
+
+const cliById = (id) => CLI.find((c) => c.id === id);
+const mecById = (id) => MEC.find((m) => m.id === id);
+
+/* ---------------------------- período ----------------------------------- */
+function periodRange(p) {
+  const d = new Date(TODAY);
+  if (p === 'todo') return { start: new Date('2000-01-01'), end: new Date('2999-01-01') };
+  if (p === 'hoy') {
+    const s = new Date(d); s.setHours(0, 0, 0, 0);
+    const e = new Date(d); e.setHours(23, 59, 59, 999);
+    return { start: s, end: e };
+  }
+  if (p === 'semana') {
+    const day = (d.getDay() + 6) % 7; // lunes=0 (formato chileno)
+    const s = new Date(d); s.setDate(d.getDate() - day); s.setHours(0, 0, 0, 0);
+    const e = new Date(s); e.setDate(s.getDate() + 6); e.setHours(23, 59, 59, 999);
+    return { start: s, end: e };
+  }
+  // mes
+  const s = new Date(d.getFullYear(), d.getMonth(), 1);
+  const e = new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59, 999);
+  return { start: s, end: e };
+}
+const parseF = (f) => new Date(f.replace(' ', 'T'));
+function solInPeriod() {
+  const { start, end } = periodRange(state.period);
+  return SOL.filter((s) => { const t = parseF(s.fecha); return t >= start && t <= end; });
+}
+const fmtFecha = (f) => {
+  const d = parseF(f);
+  const mes = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'][d.getMonth()];
+  const hh = String(d.getHours()).padStart(2, '0'), mm = String(d.getMinutes()).padStart(2, '0');
+  return d.getDate() + ' ' + mes + ' · ' + hh + ':' + mm;
+};
+
+/* ----------------------------- UI helpers ------------------------------- */
+function badge(estado) {
+  const m = ESTADO[estado];
+  return `<span style="display:inline-flex;align-items:center;gap:6px;background:${m.bg};color:${m.ink};border-radius:8px;padding:4px 10px;font-size:12px;font-weight:600;white-space:nowrap;">
+    <span style="width:6px;height:6px;border-radius:50%;background:${m.ink};"></span>${m.label}</span>`;
+}
+function gravTag(g) {
+  const m = GRAV[g];
+  return `<span style="color:${m.ink};font-weight:600;font-size:12.5px;">${m.label}</span>`;
+}
+function avatar(init, bg, sz = 38, rad = 11) {
+  return `<div style="width:${sz}px;height:${sz}px;border-radius:${rad}px;background:${bg};color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:${sz * 0.38}px;flex-shrink:0;">${init}</div>`;
+}
+function kpi(label, value, sub, accent) {
+  return `<div style="background:#fff;border:1px solid #E6EBF2;border-radius:16px;padding:16px 18px;min-width:0;">
+    <div style="font-size:12px;color:#5C6B80;font-weight:600;">${label}</div>
+    <div class="mono" style="font-size:26px;font-weight:600;color:${accent || '#0F1B2D'};margin-top:6px;letter-spacing:-.5px;">${value}</div>
+    <div style="font-size:11.5px;color:#94A3B5;margin-top:3px;">${sub || ''}</div>
+  </div>`;
+}
+function card(inner, pad = '18px') {
+  return `<div style="background:#fff;border:1px solid #E6EBF2;border-radius:18px;padding:${pad};">${inner}</div>`;
+}
+function th(t, extra = '') { return `<th style="font-size:11px;font-weight:600;color:#94A3B5;text-transform:uppercase;letter-spacing:.6px;padding:0 14px 11px;${extra}">${t}</th>`; }
+
+/* ------------------------------- vistas --------------------------------- */
+function viewResumen() {
+  const inP = solInPeriod();
+  const activas = SOL.filter((s) => ACTIVOS.includes(s.estado));
+  const pagadas = inP.filter((s) => s.estado === 'pagada');
+  const comision = pagadas.reduce((a, s) => a + s.monto * 0.1, 0);
+  const gmv = pagadas.reduce((a, s) => a + s.monto, 0);
+  const disp = MEC.filter((m) => m.disp && m.verif).length;
+  const etas = activas.filter((s) => s.etaMin).map((s) => s.etaMin);
+  const etaProm = etas.length ? Math.round(etas.reduce((a, b) => a + b, 0) / etas.length) : 0;
+  const noCancel = inP.filter((s) => s.estado !== 'cancelada');
+  const cerradas = noCancel.filter((s) => s.estado === 'pagada' || s.estado === 'completada');
+  const compl = noCancel.length ? Math.round(cerradas.length / noCancel.length * 100) : 0;
+  const retenido = SOL.filter((s) => s.pago === 'retenido').reduce((a, s) => a + s.monto, 0);
+
+  const kpis = [
+    kpi('Solicitudes activas', activas.length, activas.filter(s=>s.grav==='critica').length + ' críticas ahora', '#1A56C4'),
+    kpi('Comisión del período', clp(comision), 'Faena 10% · ' + pagadas.length + ' pagadas', '#15976A'),
+    kpi('GMV del período', clp(gmv), 'Volumen transado', '#0F1B2D'),
+    kpi('Mecánicos disponibles', disp + '/' + MEC.filter(m=>m.verif).length, 'verificados conectados', '#1A56C4'),
+    kpi('ETA promedio activas', etaProm + ' min', 'llegada a terreno', '#0F1B2D'),
+    kpi('Tasa de completación', compl + '%', 'del período', '#15976A'),
+  ].join('');
+
+  // chart: comisión por día (período)
+  const byDay = {};
+  pagadas.forEach((s) => { const d = parseF(s.fecha); const k = d.getDate(); byDay[k] = (byDay[k] || 0) + s.monto * 0.1; });
+  const days = Object.keys(byDay).map(Number).sort((a, b) => a - b);
+  const max = Math.max(1, ...days.map((d) => byDay[d]));
+  const bars = days.map((d) => {
+    const h = Math.max(6, Math.round(byDay[d] / max * 120));
+    return `<div style="display:flex;flex-direction:column;align-items:center;gap:6px;flex:1;min-width:26px;">
+      <div class="mono" style="font-size:9.5px;color:#94A3B5;">${clpK(byDay[d])}</div>
+      <div style="width:60%;height:${h}px;border-radius:6px 6px 0 0;background:linear-gradient(180deg,#1A56C4,#3D74D8);"></div>
+      <div class="mono" style="font-size:10px;color:#5C6B80;">${d}</div>
+    </div>`;
+  }).join('') || `<div style="color:#94A3B5;font-size:13px;padding:30px;">Sin pagos en el período.</div>`;
+
+  const chart = card(`
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+      <div style="font-size:15px;font-weight:700;">Comisión por día</div>
+      <div style="font-size:12px;color:#94A3B5;">${ESTADO_period_label()}</div>
+    </div>
+    <div style="display:flex;align-items:flex-end;gap:6px;min-height:150px;">${bars}</div>`);
+
+  // feed: actividad reciente (activas + recientes)
+  const recientes = [...SOL].sort((a, b) => parseF(b.fecha) - parseF(a.fecha)).slice(0, 6);
+  const feed = recientes.map((s) => {
+    const c = cliById(s.cli), m = s.mec ? mecById(s.mec) : null;
+    return `<div data-act="openSol" data-arg="${s.id}" class="tap row" style="display:flex;align-items:center;gap:12px;padding:11px 8px;border-radius:12px;">
+      ${avatar(c.init, '#0F1B2D', 34, 10)}
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:13.5px;font-weight:600;">${s.falla} · ${s.code}</div>
+        <div style="font-size:11.5px;color:#94A3B5;">${c.name}${m ? ' · ' + m.name : ' · sin asignar'} · ${fmtFecha(s.fecha)}</div>
+      </div>
+      ${badge(s.estado)}
+    </div>`;
+  }).join('');
+
+  return `<div class="view">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;">${kpis}</div>
+    ${retenido > 0 ? `<div style="margin-top:14px;display:flex;align-items:center;gap:12px;background:#FCF2DF;border:1px solid #F2E0B8;border-radius:14px;padding:14px 16px;">
+      <span style="width:9px;height:9px;border-radius:50%;background:#E08600;"></span>
+      <div style="flex:1;font-size:13px;color:#8A5A00;"><b>${clp(retenido)}</b> en garantía retenida pendiente de liberar a mecánicos.</div>
+      <span data-act="nav" data-arg="pagos" class="tap" style="font-size:13px;font-weight:600;color:#1A56C4;">Revisar pagos →</span>
+    </div>` : ''}
+    <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:14px;margin-top:14px;">
+      ${chart}
+      ${card(`<div style="font-size:15px;font-weight:700;margin-bottom:6px;">Actividad reciente</div>${feed}`)}
+    </div>
+  </div>`;
+}
+function ESTADO_period_label() {
+  return { hoy: 'Hoy', semana: 'Esta semana', mes: 'Este mes', todo: 'Histórico' }[state.period];
+}
+
+function viewSolicitudes() {
+  const inP = solInPeriod().sort((a, b) => parseF(b.fecha) - parseF(a.fecha));
+  const rows = inP.map((s) => {
+    const c = cliById(s.cli), m = s.mec ? mecById(s.mec) : null;
+    return `<tr data-act="openSol" data-arg="${s.id}" class="tap row" style="border-top:1px solid #F0F4F9;">
+      <td style="padding:13px 14px;"><span class="mono" style="font-size:12px;color:#5C6B80;">${s.id}</span></td>
+      <td style="padding:13px 14px;">
+        <div style="font-size:13.5px;font-weight:600;">${s.falla}</div>
+        <div class="mono" style="font-size:11px;color:#94A3B5;">${s.code} · ${s.equipo}</div>
+      </td>
+      <td style="padding:13px 14px;font-size:13px;">${c.name}</td>
+      <td style="padding:13px 14px;font-size:13px;">${m ? m.name : '<span style="color:#94A3B5;">— sin asignar</span>'}</td>
+      <td style="padding:13px 14px;">${gravTag(s.grav)}</td>
+      <td style="padding:13px 14px;">${badge(s.estado)}</td>
+      <td style="padding:13px 14px;font-size:12.5px;color:#5C6B80;white-space:nowrap;">${fmtFecha(s.fecha)}</td>
+      <td style="padding:13px 14px;text-align:right;"><span class="mono" style="font-size:13px;font-weight:600;">${s.monto ? clp(s.monto) : '—'}</span></td>
+    </tr>`;
+  }).join('');
+
+  return `<div class="view">
+    <div style="font-size:13px;color:#5C6B80;margin-bottom:12px;">${inP.length} solicitudes · ${ESTADO_period_label()}</div>
+    ${card(`<div style="overflow-x:auto;"><table>
+      <thead><tr>${th('ID')}${th('Falla / equipo')}${th('Cliente')}${th('Mecánico')}${th('Gravedad')}${th('Estado')}${th('Fecha')}${th('Monto','text-align:right')}</tr></thead>
+      <tbody>${rows}</tbody></table></div>`, '8px')}
+  </div>`;
+}
+
+function viewMecanicos() {
+  const rows = MEC.map((m) => {
+    const activos = SOL.filter((s) => s.mec === m.id && ACTIVOS.includes(s.estado)).length;
+    const ganancia = SOL.filter((s) => s.mec === m.id && s.estado === 'pagada').reduce((a, s) => a + s.monto * 0.9, 0);
+    const estCol = m.estado === 'activo' ? '#15976A' : m.estado === 'pendiente' ? '#E08600' : '#94A3B5';
+    const estLbl = m.estado === 'activo' ? 'Activo' : m.estado === 'pendiente' ? 'Verificación pendiente' : 'Suspendido';
+    return `<tr style="border-top:1px solid #F0F4F9;">
+      <td style="padding:13px 14px;"><div style="display:flex;align-items:center;gap:11px;">${avatar(m.init, m.bg)}
+        <div><div style="font-size:13.5px;font-weight:600;">${m.name}</div><div style="font-size:11.5px;color:#94A3B5;">${m.spec}</div></div></div></td>
+      <td style="padding:13px 14px;font-size:13px;">${m.zona}</td>
+      <td style="padding:13px 14px;"><span style="color:#E08600;font-weight:600;font-size:13px;">★ ${m.rating}</span> <span style="color:#94A3B5;font-size:12px;">(${m.jobs})</span></td>
+      <td style="padding:13px 14px;font-size:13px;">${activos} activas</td>
+      <td style="padding:13px 14px;"><span class="mono" style="font-size:13px;font-weight:600;color:#15976A;">${clp(ganancia)}</span></td>
+      <td style="padding:13px 14px;"><span style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;color:${estCol};"><span style="width:7px;height:7px;border-radius:50%;background:${estCol};"></span>${estLbl}</span></td>
+      <td style="padding:13px 14px;text-align:right;white-space:nowrap;">
+        <span data-act="toggleDisp" data-arg="${m.id}" class="tap" style="display:inline-block;font-size:12px;font-weight:600;border-radius:8px;padding:6px 11px;margin-right:6px;${m.disp ? 'background:#E6F4EE;color:#15976A;' : 'background:#F0F4F9;color:#94A3B5;'}">${m.disp ? 'Disponible' : 'No disp.'}</span>
+        ${!m.verif ? `<span data-act="verifMec" data-arg="${m.id}" class="tap" style="display:inline-block;font-size:12px;font-weight:600;border-radius:8px;padding:6px 11px;background:#1A56C4;color:#fff;">Verificar</span>` : `<span style="display:inline-block;font-size:12px;color:#94A3B5;">✓ verificado</span>`}
+      </td>
+    </tr>`;
+  }).join('');
+
+  return `<div class="view">
+    <div style="font-size:13px;color:#5C6B80;margin-bottom:12px;">${MEC.length} mecánicos en la red · ${MEC.filter(m=>m.disp&&m.verif).length} disponibles ahora</div>
+    ${card(`<div style="overflow-x:auto;"><table>
+      <thead><tr>${th('Mecánico')}${th('Zona')}${th('Rating')}${th('Carga')}${th('Ganancia acum.')}${th('Estado')}${th('Acciones','text-align:right')}</tr></thead>
+      <tbody>${rows}</tbody></table></div>`, '8px')}
+  </div>`;
+}
+
+function viewClientes() {
+  const rows = CLI.map((c) => {
+    const todas = SOL.filter((s) => s.cli === c.id);
+    const gasto = todas.filter((s) => s.estado === 'pagada').reduce((a, s) => a + s.monto, 0);
+    const activas = todas.filter((s) => ACTIVOS.includes(s.estado)).length;
+    return `<tr style="border-top:1px solid #F0F4F9;">
+      <td style="padding:13px 14px;"><div style="display:flex;align-items:center;gap:11px;">${avatar(c.init, '#0F1B2D')}
+        <div><div style="font-size:13.5px;font-weight:600;">${c.name}</div><div style="font-size:11.5px;color:#94A3B5;">${c.rubro}</div></div></div></td>
+      <td style="padding:13px 14px;font-size:13px;">${c.equipos} equipos</td>
+      <td style="padding:13px 14px;font-size:13px;">${todas.length} solicitudes</td>
+      <td style="padding:13px 14px;font-size:13px;">${activas} activas</td>
+      <td style="padding:13px 14px;"><span style="color:#E08600;font-weight:600;font-size:13px;">★ ${c.rating}</span></td>
+      <td style="padding:13px 14px;text-align:right;"><span class="mono" style="font-size:13px;font-weight:600;">${clp(gasto)}</span></td>
+    </tr>`;
+  }).join('');
+  return `<div class="view">
+    <div style="font-size:13px;color:#5C6B80;margin-bottom:12px;">${CLI.length} empresas · ${CLI.reduce((a,c)=>a+c.equipos,0)} equipos en flota</div>
+    ${card(`<div style="overflow-x:auto;"><table>
+      <thead><tr>${th('Empresa')}${th('Flota')}${th('Solicitudes')}${th('Activas')}${th('Rating')}${th('Gasto acum.','text-align:right')}</tr></thead>
+      <tbody>${rows}</tbody></table></div>`, '8px')}
+  </div>`;
+}
+
+function viewPagos() {
+  const inP = solInPeriod().filter((s) => s.estado === 'pagada' || s.estado === 'completada');
+  const retenido = SOL.filter((s) => s.pago === 'retenido').reduce((a, s) => a + s.monto, 0);
+  const liberado = solInPeriod().filter((s) => s.pago === 'liberado').reduce((a, s) => a + s.monto, 0);
+  const comision = solInPeriod().filter((s) => s.estado === 'pagada').reduce((a, s) => a + s.monto * 0.1, 0);
+
+  const tarjetas = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:14px;">
+    ${kpi('Comisión Faena', clp(comision), '10% del volumen', '#15976A')}
+    ${kpi('Liberado a mecánicos', clp(liberado), 'período actual', '#0F1B2D')}
+    ${kpi('En garantía (retenido)', clp(retenido), 'pendiente de liberar', '#E08600')}
+  </div>`;
+
+  const rows = inP.sort((a, b) => parseF(b.fecha) - parseF(a.fecha)).map((s) => {
+    const c = cliById(s.cli), m = mecById(s.mec);
+    const com = s.monto * 0.1, payout = s.monto * 0.9;
+    const pagoLbl = s.pago === 'liberado' ? { t: 'Liberado', bg: '#E6F4EE', ink: '#15976A' } : { t: 'Retenido', bg: '#FCF2DF', ink: '#E08600' };
+    return `<tr style="border-top:1px solid #F0F4F9;">
+      <td style="padding:13px 14px;"><span class="mono" style="font-size:12px;color:#5C6B80;">${s.id}</span></td>
+      <td style="padding:13px 14px;font-size:13px;">${c.name}</td>
+      <td style="padding:13px 14px;font-size:13px;">${m ? m.name : '—'}</td>
+      <td style="padding:13px 14px;text-align:right;"><span class="mono" style="font-size:13px;">${clp(s.monto)}</span></td>
+      <td style="padding:13px 14px;text-align:right;"><span class="mono" style="font-size:13px;color:#15976A;font-weight:600;">${clp(com)}</span></td>
+      <td style="padding:13px 14px;text-align:right;"><span class="mono" style="font-size:13px;">${clp(payout)}</span></td>
+      <td style="padding:13px 14px;text-align:right;">
+        <span style="background:${pagoLbl.bg};color:${pagoLbl.ink};border-radius:8px;padding:4px 10px;font-size:12px;font-weight:600;">${pagoLbl.t}</span>
+        ${s.pago === 'retenido' ? `<span data-act="liberar" data-arg="${s.id}" class="tap" style="margin-left:6px;background:#1A56C4;color:#fff;border-radius:8px;padding:4px 10px;font-size:12px;font-weight:600;">Liberar</span>` : ''}
+      </td>
+    </tr>`;
+  }).join('');
+
+  return `<div class="view">${tarjetas}
+    ${card(`<div style="overflow-x:auto;"><table>
+      <thead><tr>${th('ID')}${th('Cliente')}${th('Mecánico')}${th('Total','text-align:right')}${th('Comisión','text-align:right')}${th('Payout','text-align:right')}${th('Garantía','text-align:right')}</tr></thead>
+      <tbody>${rows}</tbody></table></div>`, '8px')}
+  </div>`;
+}
+
+/* ------------------------------- modal ---------------------------------- */
+function renderModal() {
+  if (!state.modal) return '';
+  const s = SOL.find((x) => x.id === state.modal);
+  if (!s) return '';
+  const c = cliById(s.cli), m = s.mec ? mecById(s.mec) : null;
+  const idx = FLUJO.indexOf(s.estado);
+  const puedeAvanzar = idx >= 0 && idx < FLUJO.length - 1 && s.estado !== 'cancelada';
+  const dispMec = MEC.filter((x) => x.verif && x.estado === 'activo');
+
+  const flujoView = FLUJO.map((e, i) => {
+    const done = idx >= i && s.estado !== 'cancelada';
+    return `<div style="flex:1;text-align:center;">
+      <div style="height:5px;border-radius:3px;background:${done ? '#1A56C4' : '#E6EBF2'};margin-bottom:6px;"></div>
+      <div style="font-size:9.5px;color:${done ? '#1A56C4' : '#94A3B5'};font-weight:${s.estado === e ? '700' : '500'};">${ESTADO[e].label}</div>
+    </div>`;
+  }).join('');
+
+  const asignar = !m ? `<div style="margin-top:14px;">
+    <div style="font-size:12px;font-weight:600;color:#5C6B80;margin-bottom:8px;">Asignar mecánico</div>
+    <div style="display:flex;flex-direction:column;gap:7px;">
+      ${dispMec.map((x) => `<div data-act="assign" data-arg="${s.id}|${x.id}" class="tap row" style="display:flex;align-items:center;gap:11px;border:1px solid #E6EBF2;border-radius:12px;padding:10px 12px;">
+        ${avatar(x.init, x.bg, 34, 10)}
+        <div style="flex:1;"><div style="font-size:13px;font-weight:600;">${x.name}</div><div style="font-size:11px;color:#94A3B5;">${x.spec} · ${x.disp ? 'disponible' : 'ocupado'}</div></div>
+        <span style="color:#E08600;font-size:12px;font-weight:600;">★ ${x.rating}</span>
+      </div>`).join('')}
+    </div></div>` : `<div style="margin-top:14px;display:flex;align-items:center;gap:11px;background:#F7F9FC;border-radius:12px;padding:12px;">
+      ${avatar(m.init, m.bg)}
+      <div style="flex:1;"><div style="font-size:13.5px;font-weight:600;">${m.name}</div><div style="font-size:11.5px;color:#94A3B5;">${m.spec} · ★ ${m.rating}</div></div>
+      <span style="font-size:11.5px;color:#15976A;font-weight:600;">Asignado</span>
+    </div>`;
+
+  return `<div data-act="closeModal" style="position:fixed;inset:0;background:rgba(15,27,45,.45);display:flex;align-items:center;justify-content:center;z-index:60;padding:20px;">
+    <div onclick="event.stopPropagation()" style="background:#fff;border-radius:22px;width:520px;max-width:100%;max-height:90vh;overflow:auto;box-shadow:0 40px 80px -20px rgba(15,27,45,.5);">
+      <div style="padding:22px 22px 16px;border-bottom:1px solid #F0F4F9;">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
+          <div>
+            <div class="mono" style="font-size:11px;color:#94A3B5;">${s.id} · ${fmtFecha(s.fecha)}</div>
+            <div style="font-size:20px;font-weight:700;margin-top:4px;">${s.falla}</div>
+            <div style="font-size:13px;color:#5C6B80;margin-top:2px;">${s.equipo} · ${s.code}</div>
+          </div>
+          <div data-act="closeModal" class="tap" style="width:34px;height:34px;border-radius:10px;background:#F0F4F9;display:flex;align-items:center;justify-content:center;font-size:18px;color:#5C6B80;">×</div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:12px;">${badge(s.estado)} ${gravTag(s.grav)}</div>
+      </div>
+      <div style="padding:18px 22px;">
+        <div style="display:flex;gap:6px;align-items:flex-start;margin-bottom:6px;">${flujoView}</div>
+        <div style="display:flex;gap:12px;margin-top:18px;">
+          <div style="flex:1;background:#F7F9FC;border-radius:12px;padding:12px;"><div style="font-size:11px;color:#94A3B5;">Cliente</div><div style="font-size:13.5px;font-weight:600;margin-top:2px;">${c.name}</div></div>
+          <div style="flex:1;background:#F7F9FC;border-radius:12px;padding:12px;"><div style="font-size:11px;color:#94A3B5;">Monto / Comisión</div><div class="mono" style="font-size:13.5px;font-weight:600;margin-top:2px;">${s.monto ? clp(s.monto) : '—'}<span style="color:#15976A;"> · ${s.monto ? clp(s.monto * 0.1) : '—'}</span></div></div>
+        </div>
+        ${asignar}
+      </div>
+      <div style="padding:14px 22px 20px;display:flex;gap:10px;">
+        ${s.estado !== 'cancelada' && s.estado !== 'pagada' ? `<div data-act="cancelar" data-arg="${s.id}" class="tap" style="flex:1;height:46px;border-radius:13px;border:1.5px solid #E6EBF2;color:#C1331C;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:600;">Cancelar solicitud</div>` : ''}
+        ${puedeAvanzar ? `<div data-act="avanzar" data-arg="${s.id}" class="tap" style="flex:2;height:46px;border-radius:13px;background:#1A56C4;color:#fff;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;">Avanzar a "${ESTADO[FLUJO[idx + 1]].label}"</div>` : `<div style="flex:2;height:46px;border-radius:13px;background:#E6F4EE;color:#15976A;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;">Flujo finalizado</div>`}
+      </div>
+    </div>
+  </div>`;
+}
+
+/* ------------------------------- shell ---------------------------------- */
+const NAV = [
+  { id: 'resumen', label: 'Resumen' },
+  { id: 'solicitudes', label: 'Solicitudes' },
+  { id: 'mecanicos', label: 'Mecánicos' },
+  { id: 'clientes', label: 'Clientes' },
+  { id: 'pagos', label: 'Pagos' },
+];
+const VIEWS = { resumen: viewResumen, solicitudes: viewSolicitudes, mecanicos: viewMecanicos, clientes: viewClientes, pagos: viewPagos };
+
+function navIcon(id, active) {
+  const c = active ? '#fff' : '#7FA8E8';
+  const P = {
+    resumen: `<rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/>`,
+    solicitudes: `<path d="M4 5h16M4 12h16M4 19h10"/>`,
+    mecanicos: `<path d="M14.7 6.3a5 5 0 00-6.4 6.4L3 18v3h3l5.3-5.3a5 5 0 006.4-6.4l-2.8 2.8-2.3-2.3 2.8-2.8z"/>`,
+    clientes: `<rect x="4" y="9" width="16" height="11" rx="2"/><path d="M8 9V6a4 4 0 018 0v3"/>`,
+    pagos: `<rect x="3" y="6" width="18" height="12" rx="2"/><path d="M3 10h18"/>`,
+  };
+  const fill = id === 'resumen' ? c : 'none';
+  return `<svg width="18" height="18" viewBox="0 0 24 24" fill="${id === 'resumen' ? c : 'none'}" stroke="${c}" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round">${P[id]}</svg>`;
+}
+
+function renderShell() {
+  const nav = NAV.map((n) => {
+    const a = state.view === n.id;
+    return `<div data-act="nav" data-arg="${n.id}" class="tap navitem" style="display:flex;align-items:center;gap:11px;padding:11px 13px;border-radius:11px;margin-bottom:3px;background:${a ? 'rgba(255,255,255,.1)' : 'transparent'};color:${a ? '#fff' : '#9DB0C9'};font-size:13.5px;font-weight:${a ? '600' : '500'};">
+      ${navIcon(n.id, a)}<span>${n.label}</span></div>`;
+  }).join('');
+
+  const periods = ['hoy', 'semana', 'mes', 'todo'];
+  const pLbl = { hoy: 'Hoy', semana: 'Semana', mes: 'Mes', todo: 'Todo' };
+  const seg = periods.map((p) => {
+    const a = state.period === p;
+    return `<div data-act="period" data-arg="${p}" class="tap" style="padding:7px 14px;border-radius:9px;font-size:12.5px;font-weight:600;background:${a ? '#1A56C4' : 'transparent'};color:${a ? '#fff' : '#5C6B80'};">${pLbl[p]}</div>`;
+  }).join('');
+
+  return `<div class="shell">
+    <aside class="side">
+      <div class="brand" style="display:flex;align-items:center;gap:10px;margin-bottom:24px;padding:0 4px;">
+        <div style="width:34px;height:34px;border-radius:10px;background:#1A56C4;display:flex;align-items:center;justify-content:center;">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M14.7 6.3a5 5 0 00-6.4 6.4L3 18v3h3l5.3-5.3a5 5 0 006.4-6.4l-2.8 2.8-2.3-2.3 2.8-2.8z" stroke="#fff" stroke-width="1.7" stroke-linejoin="round"/></svg>
+        </div>
+        <div><div style="font-size:16px;font-weight:700;">Faena</div><div class="mono" style="font-size:9.5px;color:#7FA8E8;letter-spacing:1px;">PANEL OPERATIVO</div></div>
+      </div>
+      <div class="navlist">${nav}</div>
+    </aside>
+    <div class="main">
+      <div class="topbar">
+        <div>
+          <div style="font-size:19px;font-weight:700;letter-spacing:-.3px;">${NAV.find((n) => n.id === state.view).label}</div>
+          <div style="font-size:12px;color:#94A3B5;">sáb 27 jun 2026 · Santiago</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:14px;">
+          <span style="display:inline-flex;align-items:center;gap:7px;font-size:11.5px;font-weight:600;color:${DEMO ? '#94A3B5' : '#15976A'};">
+            <span style="width:7px;height:7px;border-radius:50%;background:${DEMO ? '#94A3B5' : '#15976A'};"></span>${DEMO ? 'Demo' : 'Supabase'}
+          </span>
+          <div style="display:flex;gap:2px;background:#fff;border:1px solid #E6EBF2;border-radius:11px;padding:3px;">${seg}</div>
+          <div data-act="logout" class="tap" style="display:flex;align-items:center;gap:9px;">
+            ${avatar('A', '#0F1B2D', 36, 11)}
+            <div style="line-height:1.2;"><div style="font-size:13px;font-weight:600;">Angel</div><div style="font-size:11px;color:#94A3B5;">admin · salir</div></div>
+          </div>
+        </div>
+      </div>
+      ${state.err ? `<div style="margin:14px 26px 0;background:#FDECE8;border:1px solid #F2C7BD;border-radius:12px;padding:12px 16px;font-size:13px;color:#C1331C;">Error de conexión: ${state.err}</div>` : ''}
+      <div class="content">${VIEWS[state.view]()}</div>
+    </div>
+  </div>${renderModal()}`;
+}
+
+/* ------------------------------- login ---------------------------------- */
+function renderLogin(err) {
+  return `<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:radial-gradient(120% 90% at 50% 0%,#15233A 0%,#0F1B2D 100%);padding:24px;">
+    <div style="width:360px;max-width:100%;background:#fff;border-radius:22px;padding:32px 28px;box-shadow:0 40px 80px -20px rgba(0,0,0,.5);">
+      <div style="display:flex;align-items:center;gap:11px;margin-bottom:22px;">
+        <div style="width:40px;height:40px;border-radius:12px;background:#1A56C4;display:flex;align-items:center;justify-content:center;">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M14.7 6.3a5 5 0 00-6.4 6.4L3 18v3h3l5.3-5.3a5 5 0 006.4-6.4l-2.8 2.8-2.3-2.3 2.8-2.8z" stroke="#fff" stroke-width="1.7" stroke-linejoin="round"/></svg>
+        </div>
+        <div><div style="font-size:18px;font-weight:700;">Faena</div><div class="mono" style="font-size:10px;color:#94A3B5;letter-spacing:1px;">PANEL OPERATIVO</div></div>
+      </div>
+      <div style="font-size:13px;color:#5C6B80;margin-bottom:8px;">Clave de acceso</div>
+      <input id="pin" type="password" inputmode="numeric" placeholder="••••" style="width:100%;height:48px;border:1.5px solid ${err ? '#C1331C' : '#E6EBF2'};border-radius:13px;padding:0 16px;font-size:18px;letter-spacing:4px;outline:none;" />
+      ${err ? `<div style="font-size:12px;color:#C1331C;margin-top:8px;">Clave incorrecta.</div>` : ''}
+      <div data-act="login" class="tap" style="margin-top:16px;height:48px;border-radius:13px;background:#1A56C4;color:#fff;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:700;">Entrar</div>
+      <div style="font-size:11px;color:#94A3B5;margin-top:14px;text-align:center;">Acceso de demostración (front-end). Clave: 9999</div>
+    </div>
+  </div>`;
+}
+
+/* ------------------------------- render --------------------------------- */
+function render() {
+  const root = document.getElementById('root');
+  root.innerHTML = state.auth ? renderShell() : renderLogin(state._err);
+  if (!state.auth) {
+    const pin = document.getElementById('pin');
+    if (pin) { pin.focus(); pin.addEventListener('keydown', (e) => { if (e.key === 'Enter') H.login(); }); }
+  }
+}
+
+/* --------------------------- capa de datos ------------------------------ */
+function initials(nombre) {
+  const w = (nombre || '').trim().split(/\s+/);
+  return ((w[0] || '')[0] || '') + ((w[1] || '')[0] || '') || (nombre || '?').slice(0, 2);
+}
+
+async function loadAll() {
+  const [c, m, s] = await Promise.all([
+    sb.from('clientes').select('*').order('nombre'),
+    sb.from('mecanicos').select('*').order('nombre'),
+    sb.from('solicitudes').select('*').order('created_at', { ascending: false }),
+  ]);
+  const err = c.error || m.error || s.error;
+  if (err) { state.err = err.message; return; }
+  CLI = c.data.map((r) => ({ id: r.id, name: r.nombre, init: r.iniciales || initials(r.nombre).toUpperCase(), rubro: r.rubro, equipos: r.equipos, rating: Number(r.rating) }));
+  MEC = m.data.map((r) => ({ id: r.id, name: r.nombre, init: r.iniciales || initials(r.nombre).toUpperCase(), bg: r.color || '#1A56C4', spec: r.especialidad, zona: r.zona, rating: Number(r.rating), jobs: r.jobs, disp: r.disponible, verif: r.verificado, estado: r.estado }));
+  SOL = s.data.map((r) => ({ id: r.folio, dbid: r.id, equipo: r.equipo, code: r.code, falla: r.falla, grav: r.gravedad, cli: r.cliente_id, mec: r.mecanico_id, estado: r.estado, monto: r.monto, etaMin: r.eta_min, pago: r.estado_pago, fecha: r.created_at }));
+  state.err = null;
+}
+
+const SOL_COL = { estado: 'estado', mec: 'mecanico_id', pago: 'estado_pago', monto: 'monto', etaMin: 'eta_min', grav: 'gravedad', cli: 'cliente_id', equipo: 'equipo', code: 'code', falla: 'falla' };
+const MEC_COL = { disp: 'disponible', verif: 'verificado', estado: 'estado' };
+
+async function updateSol(id, patch) {
+  const s = SOL.find((x) => x.id === id); if (!s) return;
+  Object.assign(s, patch); render();                       // optimista
+  if (DEMO) return;
+  const cols = {}; for (const k in patch) if (SOL_COL[k]) cols[SOL_COL[k]] = patch[k];
+  const { error } = await sb.from('solicitudes').update(cols).eq('id', s.dbid);
+  if (error) { state.err = error.message; render(); }
+}
+
+async function updateMec(id, patch) {
+  const m = MEC.find((x) => x.id === id); if (!m) return;
+  Object.assign(m, patch); render();
+  if (DEMO) return;
+  const cols = {}; for (const k in patch) if (MEC_COL[k]) cols[MEC_COL[k]] = patch[k];
+  const { error } = await sb.from('mecanicos').update(cols).eq('id', id);
+  if (error) { state.err = error.message; render(); }
+}
+
+async function boot() {
+  if (state.auth && !DEMO && !state.loaded) {
+    render();                       // muestra el panel mientras carga
+    await loadAll();
+    state.loaded = true;
+  }
+  render();
+}
+
+/* ------------------------------ handlers -------------------------------- */
+const H = {
+  login: () => {
+    const v = (document.getElementById('pin') || {}).value;
+    if (v === '9999') { state.auth = true; state._err = false; sessionStorage.setItem('faena_admin', '1'); boot(); }
+    else { state._err = true; render(); }
+  },
+  logout: () => { state.auth = false; state.loaded = false; sessionStorage.removeItem('faena_admin'); render(); },
+  nav: (id) => { state.view = id; window.scrollTo(0, 0); render(); },
+  period: (p) => { state.period = p; render(); },
+  openSol: (id) => { state.modal = id; render(); },
+  closeModal: () => { state.modal = null; render(); },
+  avanzar: (id) => {
+    const s = SOL.find((x) => x.id === id); const i = FLUJO.indexOf(s.estado);
+    if (i >= 0 && i < FLUJO.length - 1) {
+      const ne = FLUJO[i + 1]; const patch = { estado: ne };
+      if (ne === 'pagada') patch.pago = 'retenido';
+      updateSol(id, patch);
+    }
+  },
+  cancelar: (id) => updateSol(id, { estado: 'cancelada' }),
+  assign: (arg) => {
+    const [id, mid] = arg.split('|'); const s = SOL.find((x) => x.id === id);
+    const patch = { mec: mid };
+    if (s.estado === 'buscando' || s.estado === 'pendiente') patch.estado = 'asignada';
+    updateSol(id, patch);
+  },
+  toggleDisp: (id) => { const m = mecById(id); updateMec(id, { disp: !m.disp }); },
+  verifMec: (id) => updateMec(id, { verif: true, estado: 'activo' }),
+  liberar: (id) => updateSol(id, { pago: 'liberado' }),
+};
+
+document.getElementById('root').addEventListener('click', (ev) => {
+  const el = ev.target.closest('[data-act]');
+  if (!el) return;
+  const fn = H[el.getAttribute('data-act')];
+  if (fn) fn(el.getAttribute('data-arg'));
+});
+
+if (sessionStorage.getItem('faena_admin') === '1') state.auth = true;
+boot();
+</script>
+</body>
+</html>
