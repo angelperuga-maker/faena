@@ -538,9 +538,9 @@ function initials(nombre) {
 
 async function loadAll() {
   const [c, m, s] = await Promise.all([
-    sb.from('clientes').select('*').order('nombre'),
-    sb.from('mecanicos').select('*').order('nombre'),
-    sb.from('solicitudes').select('*').order('created_at', { ascending: false }),
+    sb.from('faena_clientes').select('*').order('nombre'),
+    sb.from('faena_mecanicos').select('*').order('nombre'),
+    sb.from('faena_solicitudes').select('*').order('created_at', { ascending: false }),
   ]);
   const err = c.error || m.error || s.error;
   if (err) { state.err = err.message; return; }
@@ -558,7 +558,7 @@ async function updateSol(id, patch) {
   Object.assign(s, patch); render();                       // optimista
   if (DEMO) return;
   const cols = {}; for (const k in patch) if (SOL_COL[k]) cols[SOL_COL[k]] = patch[k];
-  const { error } = await sb.from('solicitudes').update(cols).eq('id', s.dbid);
+  const { error } = await sb.from('faena_solicitudes').update(cols).eq('id', s.dbid);
   if (error) { state.err = error.message; render(); }
 }
 
@@ -567,7 +567,7 @@ async function updateMec(id, patch) {
   Object.assign(m, patch); render();
   if (DEMO) return;
   const cols = {}; for (const k in patch) if (MEC_COL[k]) cols[MEC_COL[k]] = patch[k];
-  const { error } = await sb.from('mecanicos').update(cols).eq('id', id);
+  const { error } = await sb.from('faena_mecanicos').update(cols).eq('id', id);
   if (error) { state.err = error.message; render(); }
 }
 

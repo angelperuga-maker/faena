@@ -202,8 +202,8 @@ function mapTechRow(r) {
 async function loadFaena() {
   try {
     const [mec, par] = await Promise.all([
-      sb.from('mecanicos').select('*').order('created_at', { ascending: false }),
-      sb.from('parametros').select('*').eq('id', 1).maybeSingle(),
+      sb.from('faena_mecanicos').select('*').order('created_at', { ascending: false }),
+      sb.from('faena_parametros').select('*').eq('id', 1).maybeSingle(),
     ]);
     if (mec.data) {
       const baseNames = mechRaw.map((m) => m.name);
@@ -898,7 +898,7 @@ function registerOwner() {
   if (f.oFono.replace(/\D/g, '').length < 8) er.oFono = 'Teléfono inválido';
   if (Object.keys(er).length) { state.errors = er; render(); return; }
   save('owner', { empresa: f.oEmpresa, nombre: f.oNombre, email: f.oEmail });
-  if (!DEMO) sb.from('clientes').insert({ nombre: f.oEmpresa.trim(), rubro: 'Construcción', equipos: 0, rating: 5.0 }).then(({ error }) => { if (error) console.error(error); });
+  if (!DEMO) sb.from('faena_clientes').insert({ nombre: f.oEmpresa.trim(), rubro: 'Construcción', equipos: 0, rating: 5.0 }).then(({ error }) => { if (error) console.error(error); });
   state.errors = {}; go('home');
 }
 function regNext() {
@@ -936,7 +936,7 @@ function submitTech() {
   }
   // live: alta en mecanicos como pendiente de verificación
   resetForm(); state.errors = {}; state.regStep = 0; go('regPending');
-  sb.from('mecanicos').insert({
+  sb.from('faena_mecanicos').insert({
     nombre: f.tNombre.trim(), iniciales: init, color, especialidad: specs.join(' · '),
     especialidades: specs, zona: f.tZona, rating: 5.0, jobs: 0, disponible: false,
     verificado: false, estado: 'pendiente', rut: f.tRut.trim() || null, tarifa,
@@ -951,7 +951,7 @@ async function approveTech(id) {
     save('pendingTechs', state.pendingTechs); save('approvedTechs', state.approvedTechs);
     render(); return;
   }
-  await sb.from('mecanicos').update({ verificado: true, estado: 'activo' }).eq('id', id);
+  await sb.from('faena_mecanicos').update({ verificado: true, estado: 'activo' }).eq('id', id);
   await loadFaena(); render();
 }
 async function rejectTech(id) {
@@ -959,7 +959,7 @@ async function rejectTech(id) {
     state.pendingTechs = state.pendingTechs.filter((x) => x.id !== id);
     save('pendingTechs', state.pendingTechs); render(); return;
   }
-  await sb.from('mecanicos').delete().eq('id', id);
+  await sb.from('faena_mecanicos').delete().eq('id', id);
   await loadFaena(); render();
 }
 
@@ -1361,7 +1361,7 @@ document.querySelector('.app').addEventListener('input', (ev) => {
       save('params', state.params);
     } else {
       const col = { comision: 'comision', tarifaVisita: 'tarifa_visita', tarifaHora: 'tarifa_hora', radioKm: 'radio_km' }[key];
-      sb.from('parametros').update({ [col]: state.params[key], updated_at: new Date().toISOString() }).eq('id', 1).then(({ error }) => { if (error) console.error(error); });
+      sb.from('faena_parametros').update({ [col]: state.params[key], updated_at: new Date().toISOString() }).eq('id', 1).then(({ error }) => { if (error) console.error(error); });
     }
   }
 });
