@@ -97,6 +97,13 @@ const state = {
   approvedTechs: LS('approvedTechs', []),
   form: { oEmpresa: '', oRut: '', oNombre: '', oEmail: '', oFono: '', tNombre: '', tRut: '', tEmail: '', tFono: '', tCerts: '', tHerr: '', tZona: 'Región Metropolitana', tTarifa: '25000', tSpecs: [] },
   errors: {},
+  subEquip: null,   // equipment code being subscribed (plan picker)
+  mantMsg: null,    // transient confirmation on the maintenance tab
+  selEquip: null,   // equipment code shown in the estado-del-equipo detail
+  checkEquip: null, // equipment code being inspected (mechanic checklist)
+  checkData: {},    // 'cat|item' -> { estado, nota } during capture
+  checkResumen: '', // inspection summary during capture
+  mechMsg: null,    // transient confirmation on the mechanic dashboard
 };
 
 let _mt = null;   // match-search timeout
@@ -112,8 +119,59 @@ const fleetRaw = [
   { name: 'Bulldozer Komatsu D65', code: 'BUL-D65', type: 'Bulldozer', status: 'Operativo', kind: 'ok' },
 ];
 
+/* ----------------------- maintenance (planes/suscripciones) ------------- */
+const isoPlus = (days) => { const d = new Date(); d.setDate(d.getDate() + days); return d.toISOString().slice(0, 10); };
+const todayISO = () => new Date().toISOString().slice(0, 10);
+const daysUntil = (iso) => Math.round((new Date(iso + 'T00:00:00') - new Date(todayISO() + 'T00:00:00')) / 86400000);
+
+let PLANES = [
+  { id: 'bas',   nombre: 'Preventivo Básico', precio: 139000, descuento: 5,  prioridad: 'Estándar', beneficios: ['1 inspección mensual en terreno', 'Checklist documentado por equipo', 'Prioridad estándar', '5% dcto en reparaciones'] },
+  { id: 'pro',   nombre: 'Preventivo Pro',    precio: 259000, descuento: 10, prioridad: 'Alta',     beneficios: ['2 inspecciones + cambio de fluidos', 'Checklist + reporte de salud', 'Despacho prioritario < 4 h', '10% dcto en reparaciones'] },
+  { id: 'flota', nombre: 'Flota Total',       precio: 129000, descuento: 12, prioridad: 'Alta',     beneficios: ['Todo lo de Pro', 'Gestor de cuenta dedicado', 'Ventana de atención 24/7', 'Precio por equipo (desde 3)'] },
+];
+let SUSCR = LS('suscr', [
+  { id: 's1', equipo: 'Excavadora CAT 336', code: 'EXC-336', planId: 'pro', proxima: isoPlus(3) },
+  { id: 's2', equipo: 'Camión Volvo A40G',  code: 'CAM-A40', planId: 'bas', proxima: isoPlus(20) },
+]);
+const planById = (id) => PLANES.find((p) => p.id === id) || PLANES[0];
+const subByCode = (code) => SUSCR.find((s) => s.code === code);
+function subStatus(s) {
+  const d = daysUntil(s.proxima);
+  if (d < 0) return { key: 'vencida', label: 'Vencida', ink: '#C1331C', bg: '#FDECE8', d };
+  if (d <= 7) return { key: 'porvencer', label: 'Por vencer', ink: '#E08600', bg: '#FCF2DF', d };
+  return { key: 'aldia', label: 'Al día', ink: '#15976A', bg: '#E6F4EE', d };
+}
+
+/* -------------------- inspecciones (control documental) ----------------- */
+const CHECK_TEMPLATE = [
+  { cat: 'Motor', items: ['Nivel y estado de aceite', 'Fugas y refrigerante', 'Correas y filtros'] },
+  { cat: 'Hidráulico', items: ['Nivel y presión', 'Sellos y mangueras'] },
+  { cat: 'Frenos', items: ['Frenos de aire / presión', 'Fugas de aire'] },
+  { cat: 'Tren de rodaje', items: ['Orugas / neumáticos y tensión', 'Desgaste'] },
+  { cat: 'Eléctrico', items: ['Batería y alternador', 'Luces y tablero'] },
+  { cat: 'Seguridad', items: ['Pasadores y estructura', 'Extintor y señalética'] },
+];
+function flatChecklist(over) {
+  const out = [];
+  CHECK_TEMPLATE.forEach((g) => g.items.forEach((it) => {
+    const o = over && over[g.cat + '|' + it];
+    out.push({ cat: g.cat, item: it, estado: o ? o.estado : 'ok', nota: o ? o.nota : undefined });
+  }));
+  return out;
+}
+let INSP = LS('insp', [
+  { id: 'i1', code: 'EXC-336', equipo: 'Excavadora CAT 336', tecnico: 'Rodrigo Salazar', fecha: isoPlus(-27), estado: 'observacion', resumen: 'Equipo operativo. Observación en sello hidráulico de cilindro de brazo, en monitoreo.', checklist: flatChecklist({ 'Hidráulico|Sellos y mangueras': { estado: 'observacion', nota: 'Leve fuga en sello de cilindro de brazo' } }) },
+  { id: 'i2', code: 'EXC-336', equipo: 'Excavadora CAT 336', tecnico: 'Rodrigo Salazar', fecha: isoPlus(-57), estado: 'operativo', resumen: 'Inspección sin novedades.', checklist: flatChecklist() },
+  { id: 'i3', code: 'CAM-A40', equipo: 'Camión Volvo A40G', tecnico: 'Marcela Tapia', fecha: isoPlus(-10), estado: 'operativo', resumen: 'Equipo operativo, sin observaciones.', checklist: flatChecklist() },
+]);
+const inspByCode = (code) => INSP.filter((i) => i.code === code).sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)));
+const latestInsp = (code) => inspByCode(code)[0];
+const estadoMeta = (e) => e === 'critico' ? { label: 'Requiere atención', ink: '#C1331C', bg: '#FDECE8' } : e === 'observacion' ? { label: 'Con observaciones', ink: '#E08600', bg: '#FCF2DF' } : { label: 'Operativo', ink: '#15976A', bg: '#E6F4EE' };
+const itemMeta = (e) => e === 'critico' ? { ink: '#C1331C', label: 'Crítico' } : e === 'observacion' ? { ink: '#E08600', label: 'Observación' } : { ink: '#15976A', label: 'OK' };
+
 const tabDefs = [
   { id: 'home', label: 'Inicio', icon: 'home' },
+  { id: 'mantencion', label: 'Mantención', icon: 'shield' },
   { id: 'servicios', label: 'Servicios', icon: 'serv' },
   { id: 'perfil', label: 'Perfil', icon: 'user' },
 ];
@@ -201,10 +259,16 @@ function mapTechRow(r) {
 
 async function loadFaena() {
   try {
-    const [mec, par] = await Promise.all([
+    const [mec, par, pln, sus] = await Promise.all([
       sb.from('faena_mecanicos').select('*').order('created_at', { ascending: false }),
       sb.from('faena_parametros').select('*').eq('id', 1).maybeSingle(),
+      sb.from('faena_planes').select('*').order('orden'),
+      sb.from('faena_suscripciones').select('*').eq('estado', 'activa'),
     ]);
+    const insp = await sb.from('faena_inspecciones').select('*').order('fecha', { ascending: false });
+    if (insp.data) {
+      INSP = insp.data.map((r) => ({ id: r.id, code: r.code, equipo: r.equipo, tecnico: r.tecnico, fecha: r.fecha, estado: r.estado_general, resumen: r.resumen, checklist: Array.isArray(r.checklist) ? r.checklist : [] }));
+    }
     if (mec.data) {
       const baseNames = mechRaw.map((m) => m.name);
       state.pendingTechs = mec.data.filter((r) => !r.verificado && r.estado !== 'suspendido').map(mapTechRow);
@@ -215,6 +279,12 @@ async function loadFaena() {
     if (par && par.data) {
       const p = par.data;
       state.params = { comision: p.comision, tarifaVisita: p.tarifa_visita, tarifaHora: p.tarifa_hora, radioKm: p.radio_km };
+    }
+    if (pln.data && pln.data.length) {
+      PLANES = pln.data.map((r) => ({ id: r.id, nombre: r.nombre, precio: r.precio, descuento: r.descuento_pct, prioridad: r.prioridad === 'alta' ? 'Alta' : 'Estándar', beneficios: r.beneficios || [] }));
+    }
+    if (sus.data) {
+      SUSCR = sus.data.map((r) => ({ id: r.id, dbid: r.id, equipo: r.equipo, code: r.code, planId: r.plan_id, proxima: r.proxima_inspeccion, clienteId: r.cliente_id }));
     }
   } catch (e) { console.error('Faena load error:', e); }
 }
@@ -790,6 +860,7 @@ function screenMechHome() {
     </div>
 
     <div style="padding:18px 18px 24px;">
+      ${state.mechMsg ? `<div style="margin-bottom:16px;background:#E6F4EE;border:1px solid #BFE3D2;border-radius:14px;padding:13px 15px;display:flex;align-items:center;gap:10px;">${ICON.check('#15976A', 16, 2.2)}<span style="font-size:13px;color:#0E6B4C;">${state.mechMsg}</span></div>` : ''}
       <div style="display:flex;gap:10px;margin-bottom:20px;">
         <div style="flex:1;background:#fff;border:1px solid #E6EBF2;border-radius:16px;padding:15px;"><div style="font-size:11.5px;color:#5C6B80;">Ganancia hoy</div><div style="font-family:'IBM Plex Mono';font-size:22px;font-weight:600;color:#15976A;margin-top:3px;">$173.000</div><div style="font-size:11px;color:#94A3B5;margin-top:1px;">3 servicios completados</div></div>
         <div style="flex:1;background:#fff;border:1px solid #E6EBF2;border-radius:16px;padding:15px;"><div style="font-size:11.5px;color:#5C6B80;">Tu reputación</div><div style="font-family:'IBM Plex Mono';font-size:22px;font-weight:600;color:#E08600;margin-top:3px;">★ 4.9</div><div style="font-size:11px;color:#94A3B5;margin-top:1px;">212 reseñas</div></div>
@@ -811,6 +882,20 @@ function screenMechHome() {
           <div style="background:#1A56C4;color:#fff;border-radius:10px;padding:9px 15px;font-size:13.5px;font-weight:700;">Ver solicitud</div>
         </div>
       </div>
+
+      ${SUSCR.length ? `
+      <div style="display:flex;align-items:center;gap:8px;margin:24px 0 11px;">
+        <span style="width:8px;height:8px;border-radius:50%;background:#1A56C4;"></span>
+        <span style="font-size:13px;font-weight:700;color:#0F1B2D;">Inspecciones de mantención</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:10px;">
+        ${SUSCR.map((s) => { const st = subStatus(s); return `
+          <div style="background:#fff;border:1px solid #E6EBF2;border-radius:16px;padding:14px;display:flex;align-items:center;gap:12px;">
+            <div style="width:42px;height:42px;border-radius:12px;background:#EAF1FF;display:flex;align-items:center;justify-content:center;flex-shrink:0;">${ICON.excavator('#1A56C4')}</div>
+            <div style="flex:1;min-width:0;"><div style="font-size:14px;font-weight:600;color:#0F1B2D;">${s.equipo}</div><div style="font-size:11.5px;color:#94A3B5;">${s.code} · ${st.d < 0 ? 'inspección vencida' : 'próxima en ' + st.d + ' d'}</div></div>
+            <div data-act="startCheck" data-arg="${s.code}" class="tap" style="background:#1A56C4;color:#fff;border-radius:10px;padding:9px 13px;font-size:12.5px;font-weight:700;">Iniciar</div>
+          </div>`; }).join('')}
+      </div>` : ''}
     </div>
   </div>`;
 }
@@ -854,15 +939,242 @@ function screenMechReq() {
   </div>`;
 }
 
+/* ------------------- screen: técnico completa checklist ----------------- */
+function screenMechCheck() {
+  const code = state.checkEquip;
+  const sub = subByCode(code);
+  const equipo = sub ? sub.equipo : (fleetRaw.find((x) => x.code === code) || {}).name || code;
+
+  const groups = CHECK_TEMPLATE.map((g) => {
+    const rows = g.items.map((it) => {
+      const key = g.cat + '|' + it;
+      const cur = (state.checkData[key] || {}).estado || 'ok';
+      const opts = [['ok', 'OK', '#15976A'], ['observacion', 'Obs.', '#E08600'], ['critico', 'Crítico', '#C1331C']].map(([e, lbl, c]) => {
+        const on = cur === e;
+        return `<div data-act="setCheck" data-arg="${key}|${e}" class="tap" style="flex:1;text-align:center;border-radius:9px;padding:8px 4px;font-size:12px;font-weight:600;border:1.5px solid ${on ? c : '#E6EBF2'};background:${on ? c : '#fff'};color:${on ? '#fff' : '#94A3B5'};">${lbl}</div>`;
+      }).join('');
+      return `<div style="padding:11px 0;border-top:1px solid #F4F6F9;">
+        <div style="font-size:13px;color:#33415C;margin-bottom:8px;">${it}</div>
+        <div style="display:flex;gap:6px;">${opts}</div>
+        ${cur !== 'ok' ? `<input data-note="${key}" value="${escAttr((state.checkData[key] || {}).nota || '')}" placeholder="Nota (opcional)" style="width:100%;height:40px;margin-top:8px;border:1.5px solid #E6EBF2;border-radius:10px;padding:0 12px;font-size:13px;outline:none;" />` : ''}
+      </div>`;
+    }).join('');
+    return `<div style="background:#fff;border:1px solid #E6EBF2;border-radius:16px;padding:6px 15px 12px;margin-bottom:12px;">
+      <div style="font-size:12px;font-weight:700;color:#0F1B2D;text-transform:uppercase;letter-spacing:.5px;padding-top:12px;">${g.cat}</div>
+      ${rows}
+    </div>`;
+  }).join('');
+
+  return `<div style="min-height:100%;display:flex;flex-direction:column;">
+    <div style="display:flex;align-items:center;gap:12px;padding:58px 18px 14px;">
+      <div data-act="backMechHome" class="tap" style="width:38px;height:38px;border-radius:12px;background:#fff;border:1px solid #E6EBF2;display:flex;align-items:center;justify-content:center;flex-shrink:0;">${ICON.chevL('#0F1B2D')}</div>
+      <div>
+        <div style="font-family:'IBM Plex Mono';font-size:11px;font-weight:600;letter-spacing:1px;color:#1A56C4;text-transform:uppercase;">Inspección en terreno</div>
+        <div style="font-size:20px;font-weight:700;color:#0F1B2D;letter-spacing:-.3px;">${equipo}</div>
+      </div>
+    </div>
+    <div style="flex:1;padding:6px 18px 130px;">
+      ${groups}
+      <div style="font-size:13px;font-weight:600;color:#5C6B80;margin:4px 0 7px;">Resumen</div>
+      <textarea data-note="__resumen" placeholder="Resumen general de la inspección..." style="width:100%;min-height:74px;border:1.5px solid #E6EBF2;border-radius:12px;padding:10px 12px;font-size:13.5px;font-family:inherit;color:#0F1B2D;outline:none;resize:none;box-sizing:border-box;">${escAttr(state.checkResumen)}</textarea>
+    </div>
+    <div style="position:sticky;bottom:0;background:linear-gradient(180deg,rgba(244,246,249,0) 0%,#F4F6F9 28%);padding:14px 18px 22px;margin-top:auto;">
+      <div data-act="finishCheck" class="tap" style="height:54px;border-radius:15px;background:#15976A;color:#fff;display:flex;align-items:center;justify-content:center;gap:8px;font-size:16px;font-weight:700;box-shadow:0 14px 26px -10px rgba(21,151,106,.55);">
+        ${ICON.check('#fff', 18, 2.4)} Finalizar y enviar al dueño
+      </div>
+    </div>
+  </div>`;
+}
+
+/* --------------------------- screen: mantención ------------------------- */
+function screenMantencion() {
+  const reminders = SUSCR.filter((s) => subStatus(s).key !== 'aldia');
+  const monthly = SUSCR.reduce((a, s) => a + planById(s.planId).precio, 0);
+
+  const reminderCards = reminders.map((s) => {
+    const st = subStatus(s);
+    const txt = st.d < 0 ? `vencida hace ${Math.abs(st.d)} d` : `vence en ${st.d} d`;
+    return `<div style="background:#fff;border:1.5px solid ${st.ink};border-radius:16px;padding:15px;box-shadow:0 8px 20px -12px rgba(193,51,28,.35);">
+      <div style="display:flex;align-items:center;justify-content:space-between;">
+        <span style="display:flex;align-items:center;gap:7px;font-size:11.5px;font-weight:700;color:${st.ink};"><span style="width:7px;height:7px;border-radius:50%;background:${st.ink};animation:blip 1.1s infinite;"></span>Inspección ${st.label.toLowerCase()}</span>
+        <span style="font-family:'IBM Plex Mono';font-size:11.5px;color:#94A3B5;">${txt}</span>
+      </div>
+      <div style="font-size:16px;font-weight:700;color:#0F1B2D;margin-top:9px;">${s.equipo}</div>
+      <div style="font-size:12.5px;color:#5C6B80;margin-top:1px;">${planById(s.planId).nombre} · inspección preventiva incluida</div>
+      <div data-act="agendarMant" data-arg="${s.code}" class="tap" style="margin-top:13px;height:46px;border-radius:13px;background:#1A56C4;color:#fff;display:flex;align-items:center;justify-content:center;gap:8px;font-size:14.5px;font-weight:700;">
+        Agendar ahora ${ICON.arrow('#fff', 16)}
+      </div>
+    </div>`;
+  }).join('');
+
+  const equipos = fleetRaw.map((e) => {
+    const s = subByCode(e.code);
+    if (s) {
+      const st = subStatus(s), pl = planById(s.planId);
+      const li = latestInsp(e.code);
+      const em = estadoMeta(li ? li.estado : 'operativo');
+      return `<div data-act="openEquipo" data-arg="${e.code}" class="tap" style="background:#fff;border:1px solid #E6EBF2;border-radius:16px;padding:14px;">
+        <div style="display:flex;align-items:center;gap:12px;">
+          <div style="width:44px;height:44px;border-radius:12px;background:#EAF1FF;display:flex;align-items:center;justify-content:center;flex-shrink:0;">${ICON.excavator('#1A56C4')}</div>
+          <div style="flex:1;min-width:0;">
+            <div style="font-size:14.5px;font-weight:600;color:#0F1B2D;">${e.name}</div>
+            <div style="font-family:'IBM Plex Mono';font-size:11px;color:#94A3B5;">${e.code} · ${pl.nombre}</div>
+          </div>
+          <span style="background:${em.bg};color:${em.ink};border-radius:8px;padding:5px 9px;font-size:11px;font-weight:600;white-space:nowrap;">${em.label}</span>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-top:12px;padding-top:11px;border-top:1px solid #F0F4F9;font-size:12.5px;">
+          <span style="color:#5C6B80;">${li ? 'Inspección hace ' + Math.abs(daysUntil(li.fecha)) + ' d' : 'Sin inspecciones'} · próxima ${st.d < 0 ? 'vencida' : 'en ' + st.d + ' d'}</span>
+          <span style="color:#1A56C4;font-weight:700;display:flex;align-items:center;gap:4px;">Ver estado ${ICON.arrow('#1A56C4', 13)}</span>
+        </div>
+      </div>`;
+    }
+    return `<div style="background:#fff;border:1px solid #E6EBF2;border-radius:16px;padding:14px;display:flex;align-items:center;gap:12px;">
+      <div style="width:44px;height:44px;border-radius:12px;background:#F0F4F9;display:flex;align-items:center;justify-content:center;flex-shrink:0;">${ICON.excavator('#94A3B5')}</div>
+      <div style="flex:1;min-width:0;"><div style="font-size:14.5px;font-weight:600;color:#0F1B2D;">${e.name}</div><div style="font-family:'IBM Plex Mono';font-size:11px;color:#94A3B5;">${e.code} · sin plan</div></div>
+      <div data-act="openSub" data-arg="${e.code}" class="tap" style="background:#1A56C4;color:#fff;border-radius:10px;padding:9px 14px;font-size:13px;font-weight:700;">Suscribir</div>
+    </div>`;
+  }).join('');
+
+  const planes = PLANES.map((p) => `
+    <div style="background:#fff;border:1px solid #E6EBF2;border-radius:18px;padding:16px;min-width:230px;flex-shrink:0;width:230px;">
+      <div style="font-size:15px;font-weight:700;color:#0F1B2D;">${p.nombre}</div>
+      <div style="margin-top:4px;"><span class="mono" style="font-family:'IBM Plex Mono';font-size:22px;font-weight:600;color:#1A56C4;">${clp(p.precio)}</span><span style="font-size:12px;color:#94A3B5;"> /mes equipo</span></div>
+      <div style="display:flex;flex-direction:column;gap:7px;margin-top:12px;">
+        ${p.beneficios.map((b) => `<div style="display:flex;gap:8px;align-items:flex-start;font-size:12.5px;color:#33415C;"><span style="color:#15976A;margin-top:1px;">${ICON.check('#15976A', 13, 2.2)}</span>${b}</div>`).join('')}
+      </div>
+    </div>`).join('');
+
+  const picker = state.subEquip ? (() => {
+    const e = fleetRaw.find((x) => x.code === state.subEquip);
+    const opts = PLANES.map((p) => `
+      <div data-act="pickPlan" data-arg="${state.subEquip}|${p.id}" class="tap" style="border:1.5px solid #E6EBF2;border-radius:14px;padding:14px;display:flex;align-items:center;gap:12px;">
+        <div style="flex:1;"><div style="font-size:14.5px;font-weight:700;color:#0F1B2D;">${p.nombre}</div><div style="font-size:11.5px;color:#94A3B5;margin-top:1px;">${p.descuento}% dcto · prioridad ${p.prioridad.toLowerCase()}</div></div>
+        <div style="text-align:right;"><div style="font-family:'IBM Plex Mono';font-size:15px;font-weight:600;color:#1A56C4;">${clp(p.precio)}</div><div style="font-size:10px;color:#94A3B5;">/mes</div></div>
+      </div>`).join('');
+    return `<div data-act="closeSub" style="position:absolute;inset:0;background:rgba(15,27,45,.45);display:flex;align-items:flex-end;z-index:50;">
+      <div style="background:#fff;border-radius:24px 24px 0 0;width:100%;padding:20px 18px calc(22px + env(safe-area-inset-bottom));max-height:80%;overflow:auto;">
+        <div style="width:42px;height:5px;border-radius:3px;background:#E0E8F1;margin:0 auto 16px;"></div>
+        <div style="font-size:18px;font-weight:700;color:#0F1B2D;">Elegir plan</div>
+        <div style="font-size:13px;color:#5C6B80;margin-top:2px;margin-bottom:14px;">${e ? e.name : ''}</div>
+        <div style="display:flex;flex-direction:column;gap:10px;">${opts}</div>
+      </div>
+    </div>`;
+  })() : '';
+
+  return `<div style="min-height:100%;position:relative;padding:62px 0 26px;">
+    <div style="padding:0 22px 16px;">
+      <div style="font-size:25px;font-weight:700;color:#0F1B2D;letter-spacing:-.4px;">Mantención</div>
+      <div style="font-size:13px;color:#5C6B80;margin-top:2px;">${SUSCR.length} equipos con plan · <span class="mono" style="font-family:'IBM Plex Mono';color:#0F1B2D;font-weight:600;">${clp(monthly)}/mes</span></div>
+    </div>
+
+    ${state.mantMsg ? `<div style="margin:0 18px 14px;background:#E6F4EE;border:1px solid #BFE3D2;border-radius:14px;padding:13px 15px;display:flex;align-items:center;gap:10px;">${ICON.check('#15976A', 16, 2.2)}<span style="font-size:13px;color:#0E6B4C;">${state.mantMsg}</span></div>` : ''}
+
+    ${reminders.length ? `<div style="padding:0 18px 6px;font-size:13px;font-weight:700;color:#0F1B2D;">Recordatorios</div><div style="padding:6px 18px 18px;display:flex;flex-direction:column;gap:11px;">${reminderCards}</div>` : ''}
+
+    <div style="padding:0 22px 10px;font-size:13px;font-weight:700;color:#0F1B2D;">Mis equipos</div>
+    <div style="padding:0 18px 18px;display:flex;flex-direction:column;gap:11px;">${equipos}</div>
+
+    <div style="padding:0 22px 10px;font-size:13px;font-weight:700;color:#0F1B2D;">Planes de mantención</div>
+    <div class="sc-y" style="padding:0 18px 6px;display:flex;gap:11px;overflow-x:auto;">${planes}</div>
+
+    ${picker}
+  </div>`;
+}
+
+/* ----------------- screen: estado del equipo (bitácora) ----------------- */
+function fmtDia(iso) {
+  const m = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+  const d = new Date(iso + 'T00:00:00');
+  return d.getDate() + ' ' + m[d.getMonth()] + ' ' + d.getFullYear();
+}
+function screenEquipo() {
+  const code = state.selEquip;
+  const e = fleetRaw.find((x) => x.code === code) || { name: code, code };
+  const s = subByCode(code);
+  const hist = inspByCode(code);
+  const li = hist[0];
+  const em = estadoMeta(li ? li.estado : 'operativo');
+  const dias = li ? Math.abs(daysUntil(li.fecha)) : null;
+
+  const checklist = li ? CHECK_TEMPLATE.map((g) => {
+    const rows = li.checklist.filter((c) => c.cat === g.cat).map((c) => {
+      const im = itemMeta(c.estado);
+      return `<div style="display:flex;align-items:flex-start;gap:9px;padding:8px 0;border-top:1px solid #F4F6F9;">
+        <span style="width:9px;height:9px;border-radius:50%;background:${im.ink};margin-top:5px;flex-shrink:0;"></span>
+        <div style="flex:1;"><div style="font-size:13px;color:#33415C;">${c.item}</div>${c.nota ? `<div style="font-size:11.5px;color:${im.ink};margin-top:2px;">${c.nota}</div>` : ''}</div>
+        <span style="font-size:11px;font-weight:600;color:${im.ink};white-space:nowrap;">${im.label}</span>
+      </div>`;
+    }).join('');
+    return `<div style="margin-bottom:14px;">
+      <div style="font-size:12px;font-weight:700;color:#0F1B2D;text-transform:uppercase;letter-spacing:.5px;">${g.cat}</div>
+      ${rows}
+    </div>`;
+  }).join('') : `<div style="color:#94A3B5;font-size:13px;">Sin inspecciones registradas todavía.</div>`;
+
+  const bitacora = hist.map((i) => {
+    const m = estadoMeta(i.estado);
+    return `<div style="background:#fff;border:1px solid #E6EBF2;border-radius:14px;padding:13px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;">
+        <span style="font-size:13px;font-weight:600;color:#0F1B2D;">${fmtDia(i.fecha)}</span>
+        <span style="background:${m.bg};color:${m.ink};border-radius:7px;padding:3px 8px;font-size:11px;font-weight:600;">${m.label}</span>
+      </div>
+      <div style="font-size:12.5px;color:#5C6B80;margin-top:6px;line-height:1.45;">${i.resumen}</div>
+      <div style="font-size:11px;color:#94A3B5;margin-top:6px;">Técnico Faena · ${i.tecnico}</div>
+    </div>`;
+  }).join('');
+
+  return `<div style="min-height:100%;display:flex;flex-direction:column;">
+    <div style="display:flex;align-items:center;gap:12px;padding:58px 18px 16px;">
+      <div data-act="goMantencion" class="tap" style="width:38px;height:38px;border-radius:12px;background:#fff;border:1px solid #E6EBF2;display:flex;align-items:center;justify-content:center;flex-shrink:0;">${ICON.chevL('#0F1B2D')}</div>
+      <div style="flex:1;min-width:0;">
+        <div style="font-family:'IBM Plex Mono';font-size:11px;font-weight:600;letter-spacing:1px;color:#1A56C4;text-transform:uppercase;">Estado del equipo</div>
+        <div style="font-size:20px;font-weight:700;color:#0F1B2D;letter-spacing:-.3px;">${e.name}</div>
+      </div>
+    </div>
+
+    <div style="padding:0 18px 110px;display:flex;flex-direction:column;gap:16px;">
+      <div style="background:${em.bg};border-radius:18px;padding:17px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <span style="display:flex;align-items:center;gap:8px;font-size:17px;font-weight:700;color:${em.ink};"><span style="width:11px;height:11px;border-radius:50%;background:${em.ink};"></span>${em.label}</span>
+          <span style="font-family:'IBM Plex Mono';font-size:11px;color:#5C6B80;">${e.code}</span>
+        </div>
+        <div style="font-size:12.5px;color:#5C6B80;margin-top:10px;display:flex;align-items:center;gap:6px;">
+          <span style="width:6px;height:6px;border-radius:50%;background:#15976A;animation:blip 1.1s infinite;"></span>
+          ${li ? 'Actualizado hace ' + dias + ' día' + (dias === 1 ? '' : 's') + ' · ' + li.tecnico : 'Sin datos aún'}
+        </div>
+      </div>
+
+      <div style="display:flex;gap:10px;">
+        <div style="flex:1;background:#fff;border:1px solid #E6EBF2;border-radius:14px;padding:13px;"><div style="font-size:11px;color:#94A3B5;">Plan</div><div style="font-size:13.5px;font-weight:600;color:#0F1B2D;margin-top:2px;">${s ? planById(s.planId).nombre : 'Sin plan'}</div></div>
+        <div style="flex:1;background:#fff;border:1px solid #E6EBF2;border-radius:14px;padding:13px;"><div style="font-size:11px;color:#94A3B5;">Próxima inspección</div><div style="font-size:13.5px;font-weight:600;color:#0F1B2D;margin-top:2px;">${s ? (daysUntil(s.proxima) < 0 ? 'Vencida' : 'en ' + daysUntil(s.proxima) + ' días') : '—'}</div></div>
+      </div>
+
+      <div style="background:#fff;border:1px solid #E6EBF2;border-radius:18px;padding:16px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+          <div style="font-size:15px;font-weight:700;color:#0F1B2D;">Checklist última inspección</div>
+          ${li ? `<span style="font-size:11.5px;color:#94A3B5;font-family:'IBM Plex Mono';">${fmtDia(li.fecha)}</span>` : ''}
+        </div>
+        ${checklist}
+      </div>
+
+      <div>
+        <div style="font-size:15px;font-weight:700;color:#0F1B2D;margin-bottom:10px;">Bitácora del equipo</div>
+        <div style="display:flex;flex-direction:column;gap:10px;">${bitacora || '<div style="color:#94A3B5;font-size:13px;">Sin registros.</div>'}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
 /* ----------------------------- tab bar ---------------------------------- */
 function tabIcon(icon, color) {
   if (icon === 'home') return `<svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M3 11l9-7 9 7v9a1 1 0 01-1 1h-5v-6h-6v6H4a1 1 0 01-1-1v-9z" stroke="${color}" stroke-width="1.7" stroke-linejoin="round"/></svg>`;
+  if (icon === 'shield') return `<svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M12 3l7 2.5v5C19 16 16 19.5 12 21c-4-1.5-7-5-7-10.5v-5L12 3z" stroke="${color}" stroke-width="1.7" stroke-linejoin="round"/><path d="M9 12l2 2 4-4" stroke="${color}" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   if (icon === 'serv') return `<svg width="24" height="24" viewBox="0 0 24 24" fill="none"><rect x="3.5" y="5" width="17" height="14" rx="2.5" stroke="${color}" stroke-width="1.7"/><path d="M3.5 9.5h17M8 3v4M16 3v4" stroke="${color}" stroke-width="1.7" stroke-linecap="round"/></svg>`;
   return `<svg width="24" height="24" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="8" r="4" stroke="${color}" stroke-width="1.7"/><path d="M4 20c0-4 3.6-6.5 8-6.5s8 2.5 8 6.5" stroke="${color}" stroke-width="1.7" stroke-linecap="round"/></svg>`;
 }
 
 function renderTabBar() {
-  const ownerScreens = ['home', 'servicios', 'perfil'];
+  const ownerScreens = ['home', 'mantencion', 'servicios', 'perfil'];
   const host = document.getElementById('tabbar');
   if (!ownerScreens.includes(state.screen)) { host.innerHTML = ''; return; }
   const items = tabDefs.map((t) => {
@@ -961,6 +1273,78 @@ async function rejectTech(id) {
   }
   await sb.from('faena_mecanicos').delete().eq('id', id);
   await loadFaena(); render();
+}
+
+function subscribe(code, planId) {
+  const e = fleetRaw.find((x) => x.code === code);
+  if (!e) { state.subEquip = null; render(); return; }
+  if (DEMO) {
+    SUSCR = [...SUSCR.filter((s) => s.code !== code), { id: 's' + Date.now(), equipo: e.name, code, planId, proxima: isoPlus(30) }];
+    save('suscr', SUSCR);
+    state.subEquip = null; state.mantMsg = `${e.name} suscrito a ${planById(planId).nombre}.`; render();
+    return;
+  }
+  state.subEquip = null; render();
+  sb.from('faena_suscripciones').insert({
+    cliente_id: null, equipo: e.name, code, plan_id: planId, estado: 'activa',
+    ultima_inspeccion: todayISO(), proxima_inspeccion: isoPlus(30),
+  }).then(({ error }) => {
+    if (error) console.error(error);
+    state.mantMsg = `${e.name} suscrito.`;
+    loadFaena().then(render);
+  });
+}
+
+function agendarMant(code) {
+  const s = subByCode(code); if (!s) return;
+  const pl = planById(s.planId);
+  if (DEMO) {
+    s.proxima = isoPlus(30); save('suscr', SUSCR);
+    state.mantMsg = `Inspección de ${s.equipo} agendada — entró a despacho.`; render();
+    return;
+  }
+  Promise.resolve()
+    .then(() => sb.from('faena_solicitudes').insert({
+      equipo: s.equipo, code: s.code, falla: 'Inspección preventiva', gravedad: 'media',
+      cliente_id: s.clienteId || null, estado: 'pendiente', monto: 0, tipo: 'mantencion', suscripcion_id: s.dbid || null,
+    }))
+    .then(() => sb.from('faena_suscripciones').update({ ultima_inspeccion: todayISO(), proxima_inspeccion: isoPlus(30) }).eq('id', s.dbid))
+    .then(() => { state.mantMsg = `Inspección de ${s.equipo} agendada — entró a despacho.`; return loadFaena(); })
+    .then(render)
+    .catch((e) => console.error(e));
+}
+
+function finishCheck() {
+  const code = state.checkEquip;
+  const sub = subByCode(code);
+  const equipo = sub ? sub.equipo : (fleetRaw.find((x) => x.code === code) || {}).name || code;
+  const checklist = [];
+  CHECK_TEMPLATE.forEach((g) => g.items.forEach((it) => {
+    const d = state.checkData[g.cat + '|' + it] || {};
+    const row = { cat: g.cat, item: it, estado: d.estado || 'ok' };
+    if (d.nota) row.nota = d.nota;
+    checklist.push(row);
+  }));
+  const estado = checklist.some((c) => c.estado === 'critico') ? 'critico'
+    : checklist.some((c) => c.estado === 'observacion') ? 'observacion' : 'operativo';
+  const resumen = state.checkResumen.trim() || (estado === 'operativo' ? 'Inspección sin novedades.' : 'Inspección con observaciones registradas.');
+  const fecha = todayISO(), tecnico = 'Rodrigo Salazar';
+
+  state.mechMsg = `Inspección de ${equipo} registrada — el dueño ya la ve.`;
+  state.checkEquip = null; state.checkData = {}; state.checkResumen = '';
+
+  if (DEMO) {
+    INSP = [{ id: 'i' + Date.now(), code, equipo, tecnico, fecha, estado, resumen, checklist }, ...INSP];
+    save('insp', INSP);
+    if (sub) { sub.proxima = isoPlus(30); save('suscr', SUSCR); }
+    go('mechHome'); return;
+  }
+  go('mechHome');
+  Promise.resolve()
+    .then(() => sb.from('faena_inspecciones').insert({ equipo, code, tecnico, estado_general: estado, resumen, checklist, fecha }))
+    .then(() => sub && sub.dbid ? sb.from('faena_suscripciones').update({ ultima_inspeccion: fecha, proxima_inspeccion: isoPlus(30) }).eq('id', sub.dbid) : null)
+    .then(() => loadFaena()).then(render)
+    .catch((e) => console.error(e));
 }
 
 /* ------------------------- screens: auth / reg -------------------------- */
@@ -1252,6 +1636,7 @@ const SCREENS = {
   home: screenHome, sos: screenSOS, matching: screenMatching, profile: screenProfile,
   tracking: screenTracking, quote: screenQuote, confirm: screenConfirm,
   servicios: screenServicios, perfil: screenPerfil, mechHome: screenMechHome, mechReq: screenMechReq,
+  mantencion: screenMantencion, equipo: screenEquipo, mechCheck: screenMechCheck,
 };
 
 const DARK_TOP = ['auth', 'profile', 'mechHome', 'admin'];
@@ -1273,6 +1658,8 @@ function set(patch) { Object.assign(state, patch); render(); }
 function go(screen) {
   clearTimeout(_mt); _mt = null;
   clearInterval(_et); _et = null;
+  if (screen !== 'mantencion') { state.subEquip = null; state.mantMsg = null; }
+  if (screen !== 'mechHome') { state.mechMsg = null; }
   state.screen = screen;
   render();
 }
@@ -1317,6 +1704,15 @@ const H = {
   backMechHome: () => go('mechHome'),
   acceptMechReq: () => go('mechHome'),
   goTab: (id) => go(id),
+  openSub: (code) => { state.subEquip = code; render(); },
+  closeSub: () => { state.subEquip = null; render(); },
+  pickPlan: (arg) => { const [code, planId] = arg.split('|'); subscribe(code, planId); },
+  agendarMant: (code) => agendarMant(code),
+  openEquipo: (code) => { state.selEquip = code; go('equipo'); },
+  goMantencion: () => go('mantencion'),
+  startCheck: (code) => { state.checkEquip = code; state.checkData = {}; state.checkResumen = ''; go('mechCheck'); },
+  setCheck: (arg) => { const parts = arg.split('|'); const estado = parts.pop(); const key = parts.join('|'); state.checkData[key] = Object.assign({}, state.checkData[key], { estado }); render(); },
+  finishCheck: () => finishCheck(),
   selFault: (id) => set({ sosFault: id }),
   selSev: (id) => set({ sosSeverity: id }),
   selMech: (i) => { state.selMech = +i; go('profile'); },
@@ -1350,6 +1746,10 @@ document.querySelector('.app').addEventListener('input', (ev) => {
   const el = ev.target;
   if (el.dataset && el.dataset.field) {
     state.form[el.dataset.field] = el.value;
+  } else if (el.dataset && el.dataset.note) {
+    const k = el.dataset.note;
+    if (k === '__resumen') state.checkResumen = el.value;
+    else state.checkData[k] = Object.assign({}, state.checkData[k], { nota: el.value });
   } else if (el.dataset && el.dataset.param) {
     const n = parseInt(String(el.value).replace(/[^\d]/g, ''), 10);
     const key = el.dataset.param;
